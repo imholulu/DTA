@@ -1,0 +1,23 @@
+﻿Build started 2012/1/3 15:38:33.
+     1>Project "D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\MyPinTool.vcxproj" on node 2 (build target(s)).
+     1>InitializeBuildStatus:
+         Creating "Debug\MyPinTool.unsuccessfulbuild" because "AlwaysCreate" was specified.
+       ClCompile:
+         C:\Program Files\Microsoft Visual Studio 10.0\VC\bin\CL.exe /c /I..\..\include /I..\..\include\gen /I..\InstLib /I"..\..\..\extras\xed2-ia32\include" /I..\..\..\extras\components\include /Zi /nologo /W3 /WX- /Od /Oy- /D TARGET_IA32 /D HOST_IA32 /D TARGET_WINDOWS /D BIGARRAY_MULTIPLIER=1 /D USING_XED /D _CRT_SECURE_NO_DEPRECATE /D _SECURE_SCL=0 /D WIN32 /Gm- /MT /GS- /Gy /fp:precise /Zc:wchar_t /Zc:forScope /GR- /Fo"Debug\\" /Fd"Debug\vc100.pdb" /Gd /TP /wd4530 /analyze- /errorReport:prompt MyPinTool.cpp summary.cpp /EHs- /EHa- 
+         MyPinTool.cpp
+     1>MyPinTool.cpp(143): warning C4018: '<' : signed/unsigned mismatch
+         summary.cpp
+         Generating Code...
+       Link:
+         C:\Program Files\Microsoft Visual Studio 10.0\VC\bin\link.exe /ERRORREPORT:PROMPT /OUT:"D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.dll" /INCREMENTAL:NO /NOLOGO /LIBPATH:..\..\..\ia32\lib /LIBPATH:"..\..\..\ia32\lib-ext" /LIBPATH:"..\..\..\extras\xed2-ia32\lib" pin.lib libxed.lib libcpmt.lib libcmt.lib pinvm.lib kernel32.lib "ntdll-32.lib" /NODEFAULTLIB /MANIFEST:NO /DEBUG /PDB:"D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.pdb" /OPT:NOREF /TLBID:1 /ENTRY:"Ptrace_DllMainCRTStartup@12" /BASE:"0x55000000" /DYNAMICBASE /NXCOMPAT /IMPLIB:"D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.lib" /MACHINE:X86 /DLL Debug\MyPinTool.obj
+         Debug\summary.obj /export:main 
+            Creating library D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.lib and object D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.exp
+         MyPinTool.vcxproj -> D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\Debug\MyPinTool.dll
+       FinalizeBuildStatus:
+         Deleting file "Debug\MyPinTool.unsuccessfulbuild".
+         Touching "Debug\MyPinTool.lastbuildstate".
+     1>Done Building Project "D:\pin-2.10-41150-msvc10-ia32_intel64-windows\source\tools\MyPinTool\MyPinTool.vcxproj" (build target(s)).
+
+Build succeeded.
+
+Time Elapsed 00:00:06.13

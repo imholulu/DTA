@@ -1,0 +1,762 @@
+/*BEGIN_LEGAL 
+Intel Open Source License 
+
+Copyright (c) 2002-2011 Intel Corporation. All rights reserved.
+ 
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.  Redistributions
+in binary form must reproduce the above copyright notice, this list of
+conditions and the following disclaimer in the documentation and/or
+other materials provided with the distribution.  Neither the name of
+the Intel Corporation nor the names of its contributors may be used to
+endorse or promote products derived from this software without
+specific prior written permission.
+ 
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE INTEL OR
+ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+END_LEGAL */
+
+/*! @file
+ *  Basic taint analyzer 3 (retain source offset of the taint)
+ *  This taint analyzer only supports the propogation of taint through
+ *  MOV family of instructions. 
+ *  
+ *  This version does retain the taint source
+ */
+
+
+#include "pin.H"
+#include <iostream>
+#include <iomanip>
+#include <fstream>
+#include <map>
+#include <string.h>
+#include "xed-iclass-enum.h"
+
+//#include <stdlib.h>
+//#include "sysdep.h"
+
+
+//#include <Wdm.h>
+
+//typedef void *HANDLE;
+//HANDLE inputfile;
+
+/* ================================================================== */
+// Global variables 
+/* ================================================================== */
+struct TDS{
+       UINT32 opcode;  // opcode of operation
+       TDS * source;   // pointer to predecessor
+       ADDRINT memaddr; // Tainted Address
+       ADDRINT seed;    // The origin of the taint
+};
+
+
+map<ADDRINT, TDS * > TaintedAddrs;                 // tainted memory addresses
+TDS* TaintedRegs[REG_LAST] = {NULL};  // tainted registers
+std::ofstream out;// output file
+std::ifstream in;//input data addr
+TDS* Ftaint; // final taint
+ADDRINT memRetStack;
+
+//RTN TaintRtn;
+
+//bool SyscallT = 0;
+//char * tempbuffer;
+
+/* ===================================================================== */
+// Command line switches
+/* ===================================================================== */
+KNOB<string> KnobOutputFile(KNOB_MODE_WRITEONCE,  "pintool",
+    "o", "taint.out", "specify file name for the output file");
+
+
+/* ===================================================================== */
+// Utilities
+/* ===================================================================== */
+
+/*!
+ *  Print out help message.
+ */
+INT32 Usage()
+{
+    cerr << "This tool follows the taint defined by the first argument to " << endl <<
+            "the instumented program command line and outputs details to a file" << endl << endl;
+
+    cerr << KNOB_BASE::StringKnobSummary() << endl;
+
+    return -1;
+}
+
+/* ===================================================================== */
+// Analysis routines
+/* ===================================================================== */
+
+
+
+//dump taint information to the log file
+VOID DumpTaint()
+{
+    map<ADDRINT, TDS * >::iterator it;
+	out <<"Dump Taint:" <<endl;
+    for ( it=TaintedAddrs.begin() ; it != TaintedAddrs.end(); it++ )
+    {
+        out << "T " << (*it).first << " seed " << (*it).second->seed << endl;
+		for (TDS * t=(*it).second;t;t=t->source)
+			out << "from " << t->source->memaddr <<" by " << t->opcode <<endl;
+    }
+	for (int i=1; i<=REG_LAST-1; i++ )
+    {
+        if(TaintedRegs[i])
+		out << "T " << TaintedRegs[i]->memaddr << " seed " << TaintedRegs[i]->seed << endl;
+		//else 
+			//out << "all clear" << endl;
+    }
+}
+
+// This function marks the contents of argv[1] as tainted
+VOID MainAddTaint(unsigned int argc, char *argv[])
+{
+    if (argc != 2)
+    {
+        return;
+    }
+
+    int n = strlen(argv[1]);
+    ADDRINT taint = (ADDRINT)argv[1];
+    for (int i = 0; i < n; i++)
+    {
+        TDS *tds_temp = new TDS;
+        tds_temp->seed = i+1;
+        tds_temp->memaddr = taint+i;
+        TaintedAddrs[taint + i] = tds_temp;
+		out<<i+1<<"   "<<tds_temp->memaddr<<endl;
+    }
+
+    //DumpTaint();
+}
+
+
+VOID InvokeFunTaint()
+{
+	string infileName = "c:\\pinInput.txt";
+	ADDRINT argu0=0;
+	ADDRINT argu1=0;
+
+
+	in.open(infileName.c_str());
+
+
+	in >> hex;
+
+	in >> argu0;
+	in >> argu1;
+
+	in.close();
+
+	out <<"argu0 " <<argu0 <<endl;
+
+	out <<"argu1 " <<argu1 <<endl;
+
+	if(argu1!=0)
+	{
+	int n = 2*wcslen((wchar_t *)argu1);
+	out << "taint seed : unicode string"  << endl;
+	out << "length:" << n <<endl;
+    ADDRINT taint = (ADDRINT)argu1;
+    for (int i = 0; i < n; i++)
+    {
+        TDS *tds_temp = new TDS;
+        tds_temp->seed = i+1;
+        tds_temp->memaddr = taint+i;
+        TaintedAddrs[taint + i] = tds_temp;
+		out<<i+1<<"   "<<tds_temp->memaddr<<endl;
+    }
+	}
+
+}
+
+
+// This function represents the case of a register copied to memory
+void RegTaintMem(ADDRINT reg_r, ADDRINT mem_w, UINT32 op,ADDRINT inst_addr)
+{
+	
+    if (TaintedRegs[reg_r]) 
+    {
+        TDS *tds_temp = new TDS;
+        tds_temp->seed = TaintedRegs[reg_r]->seed;
+        tds_temp->memaddr = mem_w;
+		tds_temp->opcode = op;
+		tds_temp->source = TaintedRegs[reg_r];
+        TaintedAddrs[mem_w ]=  tds_temp; 
+
+		out << endl;
+		out << "register to memory " << inst_addr <<endl;
+		if ( op >= XED_ICLASS_MOV && op <= XED_ICLASS_MOVZX)
+		{
+			out << "MOV " <<endl;
+			if( mem_w == memRetStack )
+			{
+				out <<"overflow of function stack detect!"<<endl;
+				out <<"retaddress in stack at: "<<mem_w<<endl;
+			}
+		}
+		else
+			out <<"Point "<<endl;
+
+		out << "T " << mem_w << " source " << TaintedRegs[reg_r]->memaddr<<endl;
+
+       
+		
+		// for (TDS * t=TaintedAddrs[mem_w];t;t=t->source)
+		 //out << "trace " << t->memaddr << endl;
+	}
+    else //reg not tainted --> mem not tainted
+    {
+        if (TaintedAddrs.count(mem_w)) // if mem is already not tainted nothing to do
+        {
+            TaintedAddrs.erase(mem_w);
+            out << "U by clean memory " << mem_w << endl;
+        }
+    }
+}
+
+// this function represents the case of a memory copied to register
+void MemTaintReg(ADDRINT mem_r, ADDRINT reg_base, ADDRINT reg_index, ADDRINT reg_w, UINT32 op, ADDRINT inst_addr)//ADDRINT insad)
+{
+
+//	out<<"reg_w:"<<reg_w<<endl;
+    if (TaintedAddrs.count(mem_r)) //count is either 0 or 1 for set
+    {
+
+       // TaintedRegs[reg_w] = TaintedAddrs[mem_r];
+
+		TDS *tds_temp = new TDS;
+        tds_temp->seed = TaintedAddrs[mem_r]->seed;
+        tds_temp->memaddr = reg_w;
+		tds_temp->opcode = op;
+		tds_temp->source = TaintedAddrs[mem_r];
+        TaintedRegs[reg_w] = tds_temp; 
+		
+		out << endl;
+
+		out <<  "memory to register " <<inst_addr<<endl;
+		if ( op >= XED_ICLASS_MOV && op <= XED_ICLASS_MOVZX)
+			out << "MOV " <<endl;
+		out << "T " << reg_w << " source " << TaintedAddrs[mem_r]->memaddr <<endl;
+       //out <<  "instruction 2 opcode " << INS_Mnemonic( *(INS *)inst_addr)<<endl;
+		//out << "opcode"<< INS_Opcode(*(INS *)inst_addr)<<endl;
+		//out << "T " << reg_w << " source " << TaintedAddrs[mem_r] << " as well as"<< TaintedRegs[reg_w]<< endl;
+    }
+	else if(TaintedRegs[reg_index])//first taint index reg
+	{
+		out << endl;
+		out <<"mem of index-register pointer to register "<<inst_addr<<endl;
+			RegTaintMem(reg_index,mem_r,0,inst_addr);
+			
+
+
+	TDS *tds_temp = new TDS;
+    tds_temp->seed = TaintedRegs[mem_r]->seed;
+    tds_temp->memaddr = reg_w;
+	tds_temp->opcode = op;
+	tds_temp->source = TaintedRegs[mem_r];
+	TaintedRegs[reg_w] = tds_temp;
+	if ( op >= XED_ICLASS_MOV && op <= XED_ICLASS_MOVZX)
+			out << "MOV " <<endl;
+		out << "T " << reg_w << " source " << TaintedRegs[mem_r]->memaddr<<endl;
+
+		TaintedAddrs.erase(mem_r);//clean [base+index] after ponit
+	}
+	else if(TaintedRegs[reg_base]&&reg_index!=REG_INVALID())//second taint base reg if index reg exist
+	{
+
+		out << endl;
+		out <<"mem of base-register pointer to register " <<inst_addr<<endl;	
+		RegTaintMem(reg_base,mem_r,0,inst_addr);
+
+	TDS *tds_temp = new TDS;
+    tds_temp->seed = TaintedAddrs[mem_r]->seed;
+    tds_temp->memaddr = reg_w;
+	tds_temp->opcode = op;
+	tds_temp->source = TaintedAddrs[mem_r];
+	TaintedRegs[reg_w] = tds_temp;
+	if ( op >= XED_ICLASS_MOV && op <= XED_ICLASS_MOVZX)
+			out << "MOV " <<endl;
+		out << "T " << reg_w << " source " << TaintedAddrs[mem_r]->memaddr<<endl;
+
+		TaintedAddrs.erase(mem_r);//clean [base+index] after ponit
+
+	}
+	else 
+	{
+		TaintedRegs[reg_w] = NULL;
+	}
+}
+
+// this function represents the case of a reg copied to another reg
+void RegTaintReg(ADDRINT reg_r, ADDRINT reg_w, UINT32 op,ADDRINT inst_addr)
+{
+	if(TaintedRegs[reg_r])
+		{
+			out << endl;
+			out <<  "register to register " <<inst_addr<<endl;	
+
+	TDS *tds_temp = new TDS;
+    tds_temp->seed = TaintedRegs[reg_r]->seed;
+    tds_temp->memaddr = reg_w;
+	tds_temp->opcode = op;
+	tds_temp->source = TaintedRegs[reg_r];
+	TaintedRegs[reg_w] = tds_temp;
+	if ( op >= XED_ICLASS_MOV && op <= XED_ICLASS_MOVZX)
+			out << "MOV " <<endl;
+		out << "T " << reg_w << " source " << TaintedRegs[reg_r]->memaddr<<endl; //<< " as well as"<< TaintedAddrs[mem_w]<< "ins "<< inst_addr<< endl;
+      
+	}
+
+	else //reg is clean -> reg is cleaned
+    {
+        TaintedRegs[reg_w] = NULL;
+    }
+}
+
+// this function represents the case of an immediate copied to a register
+void ImmedCleanReg(ADDRINT reg_w)
+{
+    TaintedRegs[reg_w] = NULL;
+}
+
+// this function represent the case of an immediate copied to memory
+void ImmedCleanMem(ADDRINT mem_w)
+{
+    if (TaintedAddrs.count(mem_w)) // if mem is already not tainted nothing to do
+    {
+		out << " U by immediate #  " << mem_w << endl;
+        TaintedAddrs.erase(mem_w);
+    }
+}
+void MemofRetAddr(ADDRINT mem_w)
+{
+	memRetStack = mem_w;
+	//out << mem_w <<endl;
+}
+
+
+/* ===================================================================== */
+// Instrumentation callbacks & Helpers
+/* ===================================================================== */
+
+// True if the instruction has an immediate operand
+// meant to be called only from instrumentation routines
+bool INS_has_immed(INS ins)
+{
+    for (unsigned int i = 0; i < INS_OperandCount(ins); i++)
+    {
+        if (INS_OperandIsImmediate(ins, i))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// returns the full name of the first register operand written
+REG INS_get_write_reg(INS ins)
+{
+    for (unsigned int i = 0; i < INS_OperandCount(ins); i++)
+    {
+        if (INS_OperandIsReg(ins, i) && INS_OperandWritten(ins, i))
+        {
+            return REG_FullRegName(INS_OperandReg(ins, i));
+        }
+    }
+    
+    return REG_INVALID();
+}
+
+// returns the full name of the first register operand read
+REG INS_get_read_reg(INS ins)
+{
+    for (unsigned int i = 0; i < INS_OperandCount(ins); i++)
+    {
+        if (INS_OperandIsReg(ins, i) && INS_OperandRead(ins, i))
+        {
+            return REG_FullRegName(INS_OperandReg(ins, i));
+        }
+    }
+    
+    return REG_INVALID();
+}
+
+REG INS_get_mem_indexreg(INS ins)
+{
+	for (unsigned int i = 0; i < INS_OperandCount(ins); i++)
+	{
+        if (INS_OperandIsMemory(ins, i) && INS_OperandRead(ins, i))
+        {
+            return REG_FullRegName(INS_OperandMemoryIndexReg(ins, i));
+        }
+    }
+    
+    return REG_INVALID();
+}
+
+REG INS_get_mem_basereg(INS ins)
+{
+	for (unsigned int i = 0; i < INS_OperandCount(ins); i++)
+	{
+        if (INS_OperandIsMemory(ins, i) && INS_OperandRead(ins, i))
+        {
+            return REG_FullRegName(INS_OperandMemoryBaseReg(ins, i));
+        }
+    }
+    
+    return REG_INVALID();
+}
+
+/*!
+ * This function checks for each instruction if it does a mov that can potentially
+ * transfer taint and if true adds the approriate analysis routine to check 
+ * and propogate taint at run-time if needed
+ * This function is called every time a new trace is encountered.
+ */
+VOID Trace(TRACE trace, VOID *v)
+{
+  for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl))
+  {
+    for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins))
+    {
+		//if(INS_IsSyscall(ins))
+		//{}//out<<INS_Disassemble(ins)<<endl;
+		//if(INS_Opcode(ins) >= XED_ICLASS_SYSCALL && INS_Opcode(ins) <= XED_ICLASS_SYSRET_AMD )
+		//	out << INS_Opcode(ins) << endl;
+		if(INS_IsRet(ins)||(INS_Opcode(ins)>=XED_ICLASS_JMP&&INS_Opcode(ins)<=XED_ICLASS_JMP_FAR))
+		{
+			if(TaintedAddrs.count(INS_NextAddress(ins)))
+			{
+				out << "attack!" << endl;
+				out <<"instruction address:"<<INS_Address(ins) <<endl;
+				out <<"next instruction address:"<<INS_NextAddress(ins)<<endl;
+//        		DumpTaint();
+			}
+		}
+		if(INS_IsCall(ins))//detect overflow of stack
+		{
+			INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)MemofRetAddr,
+                                            IARG_MEMORYOP_EA, 0,
+                                            IARG_END);
+		}
+        if ( INS_Opcode(ins) >= XED_ICLASS_MOV && INS_Opcode(ins) <= XED_ICLASS_MOVZX )//&& INS_Address(ins) == 0x7c80a2f0)//||INS_Address(ins)==0x7c80a2f3))//||( (INS_Opcode(ins) >= XED_ICLASS_POP) && (INS_Opcode(ins) <= XED_ICLASS_POPFQ))||((INS_Opcode(ins) >= XED_ICLASS_PUSH) && (INS_Opcode(ins) <= XED_ICLASS_PUSHFQ))||(INS_Opcode(ins) == XED_ICLASS_LEA))
+        {
+		
+            if (INS_has_immed(ins))
+            {
+                if (INS_IsMemoryWrite(ins)) //immed -> mem
+                {
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ImmedCleanMem,
+                                            IARG_MEMORYOP_EA, 0,
+                                            IARG_END);
+                }
+                else						//immed -> reg
+                {
+                    REG insreg = INS_get_write_reg(ins);
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)ImmedCleanReg,
+                                            IARG_ADDRINT, (ADDRINT)insreg,
+                                            IARG_END);
+                }
+            }
+            else if (INS_IsMemoryRead(ins)) //mem -> reg 
+            {
+                //in this case we call MemTaintReg to copy the taint if relevant
+                REG insreg = INS_get_write_reg(ins);
+				REG basereg = INS_get_mem_basereg(ins);
+				REG indexreg = INS_get_mem_indexreg(ins);
+
+				//ADDRINT insadd = INS_Address(ins);
+				//string insdis = INS_Disassemble(ins);
+				//out <<  "instruction 2 opcode " << INS_Opcode(ins)<<endl;
+					INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)MemTaintReg,
+                                        IARG_MEMORYOP_EA, 0,
+										IARG_ADDRINT, (ADDRINT)basereg,
+										IARG_ADDRINT, (ADDRINT)indexreg,
+                                        IARG_ADDRINT, (ADDRINT)insreg,										
+										IARG_UINT32, INS_Opcode(ins),
+										IARG_INST_PTR,
+                                        IARG_END);
+
+
+            }
+            else if (INS_IsMemoryWrite(ins)) //reg -> mem 
+            {
+                //in this case we call RegTaintMem to copy the taint if relevant
+                REG insreg = INS_get_read_reg(ins);
+				//ADDRINT insadd = INS_Address(ins);
+				//IARG_INST_PTR
+
+
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RegTaintMem,
+                                        IARG_ADDRINT,(ADDRINT)insreg,
+                                        IARG_MEMORYOP_EA, 0,
+										IARG_UINT32, INS_Opcode(ins),
+										IARG_INST_PTR,
+										IARG_END);
+            }
+            else if (INS_RegR(ins, 0) != REG_INVALID()) //reg -> reg
+            {
+                //in this case we call RegTaintReg
+                REG Rreg = INS_get_read_reg(ins); 
+                REG Wreg = INS_get_write_reg(ins);
+				//ADDRINT insadd = INS_Address(ins);
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RegTaintReg,
+                                        IARG_ADDRINT, (ADDRINT)Rreg,
+                                        IARG_ADDRINT, (ADDRINT)Wreg,
+										IARG_UINT32, INS_Opcode(ins),
+										IARG_INST_PTR,
+										IARG_END);
+            }
+            else	//should never happen
+            {
+                //out << "serious error?!\n" << endl;
+            }
+		
+		} // IF opcode is a MOV
+    }  // For INS
+  }  // For BBL
+} // VOID Trace
+
+
+/*!
+ * Routine instrumentation, called for every routine loaded
+ * this function adds a call to MainAddTaint on the main function 
+ */
+VOID Routine(RTN rtn, VOID *v)
+{
+//	if(RTN_Address(rtn)==0x100183b0)
+//		out << "find the function" << endl;
+
+//	RTN dispatchRtn = RTN_FindByAddress(0x100183b0);
+//	if (RTN_Valid(dispatchRtn))
+//		{
+//			out << "find the function" << endl;
+//			out << RTN_Address(dispatchRtn)<< endl;
+//		}
+
+//    RTN_Open(rtn);
+	//out << RTN_Name(rtn) << endl;
+//    if (RTN_Name(rtn) == "DllUnregisterServer") //if this is the main function
+ //   {
+		out << RTN_Name(rtn) << endl;
+//		out << RTN_Address(rtn) << endl;
+//        RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MainAddTaint,
+//                       IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+//                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+//                       IARG_END);
+//	}
+	
+
+	
+//    RTN_Close(rtn);
+}
+
+VOID rtnInst(IMG img, VOID *v)
+{
+//	for(IMG temp = img; IMG_Valid(temp); temp = IMG_Next(temp))
+
+//	out <<IMG_Name(img)<<endl;
+	
+//	char * temp = "KVWebSvr.dll";
+	string dllname = IMG_Name(img);
+	if(dllname.find("KVWebSvr.dll")!=string::npos)
+	{
+		RTN dispatchRtn;
+
+		out <<dllname<<"start address 0x " <<IMG_LowAddress(img) <<endl;
+		out <<dllname<<"end address 0x "<<IMG_HighAddress(img) <<endl;
+
+		ADDRINT funaddr = IMG_LowAddress(img)+0x18060;
+
+//		RTN_CreateAt(0x100183b0,"sub_100183b0");//022D8060
+
+//		RTN_CreateAt(0x022D8060,"sub_invoke");
+
+//		dispatchRtn = RTN_FindByName(img, "sub_invoke");
+
+		RTN_CreateAt(funaddr,"sub_invoke");
+
+//		RTN_CreateAt(0x10019210,"sub_10019210");
+
+		dispatchRtn = RTN_FindByName(img, "sub_invoke");
+//		dispatchRtn = RTN_FindByAddress(0x100183b0);
+
+		if (RTN_Valid(dispatchRtn))
+		{
+			out << "find the function" << endl;
+			RTN_Open(dispatchRtn);
+			RTN_InsertCall(dispatchRtn,IPOINT_BEFORE,(AFUNPTR)InvokeFunTaint,IARG_END);
+
+//			RTN_InsertCall(dispatchRtn, IPOINT_BEFORE, (AFUNPTR)InputFunAddTaint,
+//                       IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+//                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+//					   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+//                       IARG_END);
+
+			RTN_Close(dispatchRtn);
+//			out << RTN_Address(dispatchRtn)<< endl;
+		}
+	}
+	
+}
+
+
+VOID Instruction(INS ins, VOID *v)
+{
+	if(INS_Address(ins)==0x100183b0)
+	{
+		string name = "sub_100183b0";
+//		TaintRtn = RTN_CreateAt(0x100183b0,name);
+		out << "Create routine"<<endl;
+	}
+}
+
+VOID TraceIns(TRACE trace, VOID *v)
+{
+	for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl))
+	{
+
+		for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins))
+		{
+			if(INS_Address(ins)==0x100183B0)
+			{
+//				out<< INS_Address(ins) << endl;
+//				out<< INS_NextAddress(ins) <<endl;
+//				RTN_CreateAt(INS_Address(ins),"sub_100183B0");
+//		        out << "Create routine"<<endl;
+//				out<< RTN_Name(INS_Rtn(ins)) <<endl;
+//				out<< RTN_Address(INS_Rtn(ins))<<endl;
+			}
+		}
+	}
+}
+
+
+
+
+
+VOID Fini(INT32 code, VOID *v)
+{
+	//out<<tempbuffer<<endl;
+    DumpTaint();
+    out.close();
+}
+
+
+
+/*!
+ * The main procedure of the tool.
+ * This function is called when the application image is loaded but not yet started.
+ * @param[in]   argc            total number of elements in the argv array
+ * @param[in]   argv            array of command line arguments, 
+ *                              including pin -t <toolname> -- ...
+ */
+BOOL FollowChild(CHILD_PROCESS childProcess, VOID * userData)
+{
+    cout << "At follow child callback" << endl << flush;
+    cout << "Child process id = " << CHILD_PROCESS_GetId(childProcess) << endl << flush;
+//	int argc = 4;
+//	char *argv[4];
+//	argv[0]="c:\\axmock-commit_1013\\bin\\pin.exe";
+//	argv[1]="-t";
+//	argv[2]="c:\\axmock-commit_1013\\bin\\findinvoke.dll";
+//	argv[3]="--";
+		//["c:\\mypin\\pin.exe", "-t","c:\\mypin\\findinvoke.dll","--"];
+//	CHILD_PROCESS_SetPinCommandLine(childProcess,argc,argv);
+    return TRUE;
+}
+
+
+int main(int argc, char *argv[])
+{
+    // Initialize PIN library. Print help message if -h(elp) is specified
+    // in the command line or the command line is invalid 
+
+    
+	PIN_InitSymbols();
+
+    if( PIN_Init(argc,argv) )
+    {
+        return Usage();
+    }
+
+
+    
+    // Register function to be called to instrument traces
+    
+//	PIN_AddSyscallEntryFunction(SyscallEntryF,0);
+//  PIN_AddSyscallExitFunction(SyscallExitF,0);
+
+//	TRACE_AddInstrumentFunction(TraceIns, 0);
+
+//	INS_AddInstrumentFunction(Instruction,0);
+
+	PIN_AddFollowChildProcessFunction(FollowChild, 0);
+
+	IMG_AddInstrumentFunction(rtnInst, 0);
+
+	
+
+	TRACE_AddInstrumentFunction(Trace, 0);//luxun code
+//	RTN_AddInstrumentFunction(Routine, 0);
+
+
+
+
+
+	
+
+
+    // Register function to be called when the application exits
+
+
+	
+	PIN_AddFiniFunction(Fini, 0);
+    
+    cerr <<  "===============================================" << endl;
+    cerr <<  "This application is instrumented by MyPinTool" << endl;
+    if (!KnobOutputFile.Value().empty()) 
+    {
+        cerr << "See file " << KnobOutputFile.Value() << " for analysis results" << endl;
+
+        string fileName = KnobOutputFile.Value();
+
+
+
+		out.open(fileName.c_str());
+		out << hex;
+//        out.open(fileName.c_str());
+//        out << hex;
+    }
+    cerr <<  "===============================================" << endl;
+
+    // Start the program, never returns
+    PIN_StartProgram();
+    
+    return 0;
+}
+
+/* ===================================================================== */
+/* eof */
+/* ===================================================================== */
